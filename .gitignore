@@ -2,3 +2,7 @@
 out/
 cache/
 node_modules/
+/web/node_modules/
+/web/dist/
+/web/package-lock.json
+/broadcast/
