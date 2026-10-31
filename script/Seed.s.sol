@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+interface Vm { function envBytes32(string calldata) external returns(bytes32); function envAddress(string calldata) external returns(address); function startBroadcast(uint256) external; function stopBroadcast() external; }
+interface Round { function registerProject(address payable recipient,string calldata metadata) external; }
+contract Seed { Vm constant vm=Vm(address(uint160(uint256(keccak256("hevm cheat code"))))); function run() external { Round q=Round(vm.envAddress("QF_ROUND_ADDRESS")); address payable recipient=payable(vm.envAddress("OPERATOR")); string[12] memory names=["Tamil wallet docs","Kannada wallet docs","Marathi Solidity videos","Guwahati Ethereum club","Tier-3 meetup kit","Hindi i18n package","QR ticketing library","Women builders group","College node guide","Security glossary","Accessibility guide","Sepolia faucet handbook"];vm.startBroadcast(uint256(vm.envBytes32("PRIVATE_KEY")));for(uint i;i<names.length;i++)q.registerProject(recipient,names[i]);vm.stopBroadcast();} }
