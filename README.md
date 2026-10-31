@@ -2,13 +2,15 @@
 
 Eligible community members contribute with an on-chain Merkle proof. Matching uses the square of summed **per-contributor** square roots, so many small backers have more matching influence than one whale.
 
+The deployed contract uses OpenZeppelin `MerkleProof`, `Math.sqrt`, and `ReentrancyGuard`; contribution eligibility, timing, quadratic accounting, matching, and withdrawal authorization are enforced on-chain.
+
 ## Verified Sepolia deployment
 
 | Item | Value |
 | --- | --- |
 | Contract | `QFRound` |
-| Address | [`0x98e0E8f04ACfA5B4CaBB3B7B5362e63b8529331e`](https://sepolia.etherscan.io/address/0x98e0E8f04ACfA5B4CaBB3B7B5362e63b8529331e) |
-| Deployment | [`0x9dd04b60df1e72e2f036460bbc1548580ddbd36b82e1904bddec738dc8f772d0`](https://sepolia.etherscan.io/tx/0x9dd04b60df1e72e2f036460bbc1548580ddbd36b82e1904bddec738dc8f772d0) |
+| Address | [`0x3DEf015b5c62326B052116A7ff161d547b84a42A`](https://sepolia.etherscan.io/address/0x3DEf015b5c62326B052116A7ff161d547b84a42A) |
+| Deployment | [`0xffa77a17b69341ac81e87d9b488fd8709a999d795b844080b16492675f665042`](https://sepolia.etherscan.io/tx/0xffa77a17b69341ac81e87d9b488fd8709a999d795b844080b16492675f665042) |
 | Network | Sepolia (`11155111`), confirmed `status: 1` |
 | Live projects | 12 seeded community projects |
 
@@ -31,7 +33,7 @@ npm install
 npm run tree
 ```
 
-The Foundry suite covers eligibility, late contributions, square-root delta accounting, early finalization, and double withdrawal. The tree command writes deterministic proofs to `out/eligibility.json`.
+The Foundry suite covers eligibility, late contributions, square-root delta accounting, early finalization, exact final score/match calculation, recipient-only withdrawal, and double withdrawal. The tree command writes deterministic proofs to `out/eligibility.json`.
 
 ## Mobile frontend
 
@@ -41,7 +43,7 @@ npm install
 npm run dev -- --host 127.0.0.1
 ```
 
-The frontend reads the live 12-project round, selects a project, obtains the connected wallet’s proof, submits `contribute`, and retains newly submitted transaction links in browser-local activity.
+The frontend reads the live 12-project round, selects a project, obtains the connected wallet’s proof, submits `contribute`, and retains newly submitted transaction links in browser-local activity. Its results view reads `Contributed` logs directly from Sepolia, recomputes raw totals and `Σ√contribution` with `BigInt`, then compares them against the contract’s stored values. Once finalized, the project recipient also sees its withdrawal action.
 
 ## Re-deploy and seed
 

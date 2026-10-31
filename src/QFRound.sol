@@ -1,4 +1,117 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
-contract QFRound { address public immutable operator;uint public immutable roundStart;uint public immutable roundEnd;bytes32 public immutable eligibilityRoot;uint public pool;bool public finalized;uint public totalScore;uint public sumMatches;uint public withdrawals;uint private lock=1; struct Project{address payable recipient;string metadata;uint raw;uint contributors;uint sumSqrt;uint score;uint matchAmount;bool withdrawn;}Project[] public projects;mapping(uint=>mapping(address=>uint))public contributed;mapping(uint=>mapping(address=>bool))public hasContributed; modifier onlyOperator(){require(msg.sender==operator,"operator");_;}modifier nonReentrant(){require(lock==1,"reentrant");lock=2;_;lock=1;}event ProjectRegistered(uint indexed id,address recipient,string metadata);event Contributed(uint indexed projectId,address indexed contributor,uint amount);event MatchFinalized(uint indexed projectId,uint score,uint matchAmount);event Withdrawn(uint indexed id,address indexed recipient,uint amount);
-constructor(address o,uint s,uint e,bytes32 root){require(o!=address(0)&&s<e);operator=o;roundStart=s;roundEnd=e;eligibilityRoot=root;}function registerProject(address payable r,string calldata m)external onlyOperator{require(block.timestamp<=roundEnd&&r!=address(0));projects.push(Project(r,m,0,0,0,0,0,false));emit ProjectRegistered(projects.length-1,r,m);}function fundPool()external payable onlyOperator{require(block.timestamp<=roundEnd&&msg.value>0);pool+=msg.value;}function contribute(uint id,bytes32[] calldata proof)external payable{require(block.timestamp>=roundStart&&block.timestamp<=roundEnd&&msg.value>0&&id<projects.length);require(verify(keccak256(bytes.concat(keccak256(abi.encode(msg.sender)))),proof),"ineligible");Project storage p=projects[id];uint old=contributed[id][msg.sender];uint nw=old+msg.value;contributed[id][msg.sender]=nw;if(!hasContributed[id][msg.sender]){hasContributed[id][msg.sender]=true;p.contributors++;}p.raw+=msg.value;p.sumSqrt+=sqrt(nw*1e18)-sqrt(old*1e18);emit Contributed(id,msg.sender,msg.value);}function finalizeMatches()external{require(block.timestamp>roundEnd&&!finalized);for(uint i;i<projects.length;i++){uint x=projects[i].sumSqrt;projects[i].score=x*x;totalScore+=x*x;}for(uint i;i<projects.length;i++){uint m=totalScore==0?0:pool*projects[i].score/totalScore;projects[i].matchAmount=m;sumMatches+=m;emit MatchFinalized(i,projects[i].score,m);}finalized=true;}function withdraw(uint id)external nonReentrant{Project storage p=projects[id];require(finalized&&msg.sender==p.recipient&&!p.withdrawn);p.withdrawn=true;withdrawals++;uint amount=p.raw+p.matchAmount;(bool ok,)=p.recipient.call{value:amount}("");require(ok);emit Withdrawn(id,p.recipient,amount);}function reclaimDust()external onlyOperator nonReentrant{require(finalized&&withdrawals==projects.length);uint a=pool-sumMatches;(bool ok,)=payable(operator).call{value:a}("");require(ok);}function verify(bytes32 leaf,bytes32[] calldata proof)public view returns(bool){bytes32 h=leaf;for(uint i;i<proof.length;i++){bytes32 q=proof[i];h=h<q?keccak256(abi.encodePacked(h,q)):keccak256(abi.encodePacked(q,h));}return h==eligibilityRoot;}function sqrt(uint y)public pure returns(uint z){if(y==0)return 0;z=y;uint x=y/2+1;while(x<z){z=x;x=(y/x+x)/2;}}function sumSqrtOf(uint id)external view returns(uint){return projects[id].sumSqrt;}function projectCount()external view returns(uint){return projects.length;}}
+
+import {MerkleProof} from "openzeppelin-contracts/contracts/utils/cryptography/MerkleProof.sol";
+import {Math} from "openzeppelin-contracts/contracts/utils/math/Math.sol";
+import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
+
+/// @notice A single, permissioned quadratic-funding round with on-chain eligibility.
+contract QFRound is ReentrancyGuard {
+    address public immutable operator;
+    uint256 public immutable roundStart;
+    uint256 public immutable roundEnd;
+    bytes32 public immutable eligibilityRoot;
+    uint256 public pool;
+    bool public finalized;
+    uint256 public totalScore;
+    uint256 public sumMatches;
+    uint256 public withdrawals;
+
+    struct Project {
+        address payable recipient;
+        string metadata;
+        uint256 raw;
+        uint256 contributors;
+        uint256 sumSqrt;
+        uint256 score;
+        uint256 matchAmount;
+        bool withdrawn;
+    }
+
+    Project[] public projects;
+    mapping(uint256 projectId => mapping(address contributor => uint256 amount)) public contributed;
+    mapping(uint256 projectId => mapping(address contributor => bool)) public hasContributed;
+
+    event ProjectRegistered(uint256 indexed id, address recipient, string metadata);
+    event PoolFunded(address indexed funder, uint256 amount);
+    event Contributed(uint256 indexed projectId, address indexed contributor, uint256 amount);
+    event MatchFinalized(uint256 indexed projectId, uint256 score, uint256 matchAmount);
+    event Withdrawn(uint256 indexed id, address indexed recipient, uint256 amount);
+
+    modifier onlyOperator() { require(msg.sender == operator, "operator only"); _; }
+
+    constructor(address initialOperator, uint256 start, uint256 end, bytes32 root) {
+        require(initialOperator != address(0) && start < end, "invalid terms");
+        operator = initialOperator;
+        roundStart = start;
+        roundEnd = end;
+        eligibilityRoot = root;
+    }
+
+    function registerProject(address payable recipient, string calldata metadata) external onlyOperator {
+        require(block.timestamp <= roundEnd && recipient != address(0), "registration closed");
+        projects.push(Project(recipient, metadata, 0, 0, 0, 0, 0, false));
+        emit ProjectRegistered(projects.length - 1, recipient, metadata);
+    }
+
+    function fundPool() external payable onlyOperator {
+        require(block.timestamp <= roundEnd && msg.value != 0, "funding closed");
+        pool += msg.value;
+        emit PoolFunded(msg.sender, msg.value);
+    }
+
+    function contribute(uint256 projectId, bytes32[] calldata proof) external payable {
+        require(block.timestamp >= roundStart && block.timestamp <= roundEnd, "round inactive");
+        require(msg.value != 0 && projectId < projects.length, "invalid contribution");
+        bytes32 leaf = keccak256(bytes.concat(keccak256(abi.encode(msg.sender))));
+        require(MerkleProof.verifyCalldata(proof, eligibilityRoot, leaf), "ineligible");
+
+        Project storage project = projects[projectId];
+        uint256 oldTotal = contributed[projectId][msg.sender];
+        uint256 newTotal = oldTotal + msg.value;
+        contributed[projectId][msg.sender] = newTotal;
+        if (!hasContributed[projectId][msg.sender]) { hasContributed[projectId][msg.sender] = true; project.contributors += 1; }
+        project.raw += msg.value;
+        project.sumSqrt += Math.sqrt(newTotal * 1e18) - Math.sqrt(oldTotal * 1e18);
+        emit Contributed(projectId, msg.sender, msg.value);
+    }
+
+    function finalizeMatches() external {
+        require(block.timestamp > roundEnd && !finalized, "not finalizable");
+        for (uint256 i; i < projects.length; ++i) {
+            uint256 sqrtSum = projects[i].sumSqrt;
+            projects[i].score = sqrtSum * sqrtSum;
+            totalScore += projects[i].score;
+        }
+        for (uint256 i; i < projects.length; ++i) {
+            uint256 matchAmount = totalScore == 0 ? 0 : pool * projects[i].score / totalScore;
+            projects[i].matchAmount = matchAmount;
+            sumMatches += matchAmount;
+            emit MatchFinalized(i, projects[i].score, matchAmount);
+        }
+        finalized = true;
+    }
+
+    function withdraw(uint256 projectId) external nonReentrant {
+        Project storage project = projects[projectId];
+        require(finalized && msg.sender == project.recipient && !project.withdrawn, "withdraw denied");
+        project.withdrawn = true;
+        withdrawals += 1;
+        uint256 amount = project.raw + project.matchAmount;
+        emit Withdrawn(projectId, project.recipient, amount);
+        (bool sent,) = project.recipient.call{value: amount}("");
+        require(sent, "transfer failed");
+    }
+
+    function reclaimDust() external nonReentrant onlyOperator {
+        require(finalized && withdrawals == projects.length, "not settled");
+        uint256 amount = pool - sumMatches;
+        (bool sent,) = payable(operator).call{value: amount}("");
+        require(sent, "transfer failed");
+    }
+
+    function verify(bytes32 leaf, bytes32[] calldata proof) external view returns (bool) { return MerkleProof.verifyCalldata(proof, eligibilityRoot, leaf); }
+    function sqrt(uint256 value) external pure returns (uint256) { return Math.sqrt(value); }
+    function sumSqrtOf(uint256 projectId) external view returns (uint256) { return projects[projectId].sumSqrt; }
+    function projectCount() external view returns (uint256) { return projects.length; }
+}
